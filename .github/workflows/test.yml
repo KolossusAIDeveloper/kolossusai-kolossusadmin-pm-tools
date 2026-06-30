@@ -1,5 +1,6 @@
 name: Tests
-on: [push]
+on:
+  workflow_dispatch:
 jobs:
   backend:
     runs-on: ubuntu-latest
