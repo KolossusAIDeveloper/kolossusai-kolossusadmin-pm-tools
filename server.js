@@ -105,6 +105,15 @@ app.use('/proxy', createProxyMiddleware({
     proxyReq: (proxyReq, req) => {
       const auth = req.headers['authorization'];
       if (auth) proxyReq.setHeader('Authorization', auth);
+
+      // express.json() consumes the body stream before the proxy runs.
+      // Re-serialize req.body so POST/PATCH/PUT payloads reach OpenProject.
+      if (req.body && Object.keys(req.body).length > 0 && ['POST', 'PATCH', 'PUT'].includes(req.method)) {
+        const bodyData = JSON.stringify(req.body);
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
+      }
     },
     error: (err, req, res) => {
       res.status(502).json({ error: 'Proxy error', message: err.message });
