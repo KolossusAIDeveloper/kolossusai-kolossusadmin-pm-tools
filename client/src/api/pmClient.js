@@ -112,14 +112,14 @@ function normalizeProject(raw) {
 }
 
 function normalizeUser(raw) {
-  const firstName = raw.firstName ?? '';
-  const lastName = raw.lastName ?? '';
-  const fullName = raw.name ?? `${firstName} ${lastName}`.trim() || raw.login ?? '';
+  const firstName = raw.firstName || '';
+  const lastName = raw.lastName || '';
+  const fullName = raw.name || (firstName + ' ' + lastName).trim() || raw.login || '';
   return {
     id: raw.id,
     name: fullName,
-    email: raw.email ?? '',
-    avatarUrl: raw.avatar ?? null,
+    email: raw.email || '',
+    avatarUrl: raw.avatar || null,
   };
 }
 
