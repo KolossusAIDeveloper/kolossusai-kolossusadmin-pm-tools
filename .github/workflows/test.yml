@@ -1,8 +1,13 @@
 name: Tests
 on: [push]
 jobs:
-  backend:
+  node:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: node tests/server.test.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm test -- --runInBand || node tests/app.test.js
+      - run: cd client && npm install && npm run build

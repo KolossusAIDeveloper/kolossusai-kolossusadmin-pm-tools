@@ -2,9 +2,6 @@ node_modules
 client/node_modules
 client/dist
 .git
-.gitignore
-*.md
 .env
-.env.*
-tests
-.github
+__pycache__
+*.log
