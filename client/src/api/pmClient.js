@@ -26,7 +26,7 @@ export function getToken() {
 
 function basicAuthHeader(token) {
   // OpenProject: username="apikey", password=token
-  return `Basic ${btoa(`apikey:${token}`)}`;
+  return 'Basic ' + btoa('apikey:' + token);
 }
 
 async function request(method, path, body = null) {
