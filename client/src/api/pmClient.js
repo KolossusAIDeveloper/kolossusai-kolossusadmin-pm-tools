@@ -1,13 +1,11 @@
-// PM API adapter — all calls go through this module
-// The UI never calls fetch directly.
-// Update the TODO(Phase 0) markers once real endpoint shapes are confirmed.
+// PM API adapter — OpenProject v3 REST API
+// Auth: Basic base64(apikey:TOKEN) — OpenProject's documented API key format
+// All calls go through this module; the UI never calls fetch directly.
 
 const PROXY_BASE = '/proxy';
 
 let _token = null;
 
-// Call the server-side probe to find which endpoint + auth format works.
-// Returns { found, endpoint, authFormat } or { found: false }.
 export async function probeApi(token) {
   const res = await fetch(`/api/probe?token=${encodeURIComponent(token)}`);
   if (!res.ok) return { found: false };
@@ -26,14 +24,19 @@ export function getToken() {
   return _token;
 }
 
+function basicAuthHeader(token) {
+  // OpenProject: username="apikey", password=token
+  return `Basic ${btoa(`apikey:${token}`)}`;
+}
+
 async function request(method, path, body = null) {
   const headers = {
     'Content-Type': 'application/json',
-    Accept: 'application/json',
+    Accept: 'application/hal+json, application/json',
   };
 
   if (_token) {
-    headers['Authorization'] = `Bearer ${_token}`;
+    headers['Authorization'] = basicAuthHeader(_token);
   }
 
   const opts = { method, headers };
@@ -47,6 +50,12 @@ async function request(method, path, body = null) {
     throw err;
   }
 
+  if (res.status === 403) {
+    const err = new Error('Forbidden');
+    err.status = 403;
+    throw err;
+  }
+
   if (res.status === 429) {
     const err = new Error('Rate limited — please wait and try again');
     err.status = 429;
@@ -57,7 +66,7 @@ async function request(method, path, body = null) {
     let message = `HTTP ${res.status}`;
     try {
       const data = await res.json();
-      message = data.message || data.error || message;
+      message = data.message || data.errorIdentifier || message;
     } catch {}
     const err = new Error(message);
     err.status = res.status;
@@ -68,186 +77,207 @@ async function request(method, path, body = null) {
   return res.json();
 }
 
-// ── Pagination helper ──────────────────────────────────────────────────────
+// ── OpenProject HAL+JSON pagination ──────────────────────────────────────────
 async function fetchAllPages(path, queryParams = {}) {
   const results = [];
-  let page = 1;
+  let offset = 1;
+  const pageSize = 50;
   let hasMore = true;
 
   while (hasMore) {
-    const params = new URLSearchParams({ ...queryParams, page, per_page: 50 });
-    // TODO(Phase 0): adjust pagination param names if API uses cursor/offset
+    const params = new URLSearchParams({ ...queryParams, offset, pageSize });
     const data = await request('GET', `${path}?${params}`);
 
-    const items = Array.isArray(data)
-      ? data
-      : data.data ?? data.items ?? data.results ?? data;
-
+    // OpenProject wraps results in _embedded.elements
+    const items = data?._embedded?.elements ?? (Array.isArray(data) ? data : []);
     results.push(...items);
 
-    // Stop if fewer items than requested (last page)
-    hasMore = items.length === 50;
-    page++;
+    const total = data.total ?? items.length;
+    hasMore = offset * pageSize < total;
+    offset++;
   }
 
   return results;
 }
 
-// ── Normalizers ───────────────────────────────────────────────────────────
+// ── Normalizers — map OpenProject HAL+JSON onto stable internal types ─────────
 
 function normalizeProject(raw) {
-  // TODO(Phase 0): map real API field names
   return {
-    id: raw.id ?? raw._id,
-    key: raw.key ?? raw.slug ?? raw.identifier ?? String(raw.id),
-    name: raw.name ?? raw.title,
-    description: raw.description ?? '',
+    id: raw.id,
+    key: raw.identifier ?? String(raw.id),
+    name: raw.name,
+    description: raw.description?.raw ?? raw.description ?? '',
   };
 }
 
 function normalizeUser(raw) {
-  // TODO(Phase 0): map real API field names
+  const firstName = raw.firstName ?? '';
+  const lastName = raw.lastName ?? '';
+  const fullName = raw.name ?? `${firstName} ${lastName}`.trim() || raw.login ?? '';
   return {
-    id: raw.id ?? raw._id,
-    name: raw.name ?? raw.full_name ?? raw.display_name ?? raw.username,
+    id: raw.id,
+    name: fullName,
     email: raw.email ?? '',
-    avatarUrl: raw.avatar ?? raw.avatar_url ?? raw.profile_picture ?? null,
+    avatarUrl: raw.avatar ?? null,
   };
 }
 
 function normalizeTask(raw) {
-  // TODO(Phase 0): map real API field names for status, assignee, priority, etc.
+  const links = raw._links ?? {};
   return {
-    id: raw.id ?? raw._id,
-    key: raw.key ?? raw.identifier ?? String(raw.id),
-    title: raw.title ?? raw.name ?? raw.subject,
-    description: raw.description ?? raw.body ?? '',
-    status: raw.status ?? raw.state ?? 'todo',
-    assigneeId: raw.assignee_id ?? raw.assignee?.id ?? raw.assigned_to ?? null,
-    priority: raw.priority ?? 'medium',
-    createdAt: raw.created_at ?? raw.createdAt ?? null,
-    updatedAt: raw.updated_at ?? raw.updatedAt ?? null,
-    projectId: raw.project_id ?? raw.project?.id ?? null,
+    id: raw.id,
+    key: `#${raw.id}`,
+    title: raw.subject ?? raw.title ?? '',
+    description: raw.description?.raw ?? raw.description ?? '',
+    status: links.status?.title ?? raw.status ?? 'New',
+    statusHref: links.status?.href ?? null,
+    assigneeId: links.assignee?.href
+      ? Number(links.assignee.href.split('/').pop())
+      : null,
+    assigneeName: links.assignee?.title ?? null,
+    priority: links.priority?.title ?? 'Normal',
+    projectId: links.project?.href
+      ? Number(links.project.href.split('/').pop())
+      : null,
+    lockVersion: raw.lockVersion ?? 0,
+    createdAt: raw.createdAt ?? null,
+    updatedAt: raw.updatedAt ?? null,
   };
 }
 
 function normalizeComment(raw) {
-  // TODO(Phase 0): map real API field names
+  const links = raw._links ?? {};
   return {
-    id: raw.id ?? raw._id,
-    authorId: raw.author_id ?? raw.author?.id ?? raw.user_id ?? null,
-    authorName: raw.author?.name ?? raw.author?.username ?? raw.user?.name ?? null,
-    body: raw.body ?? raw.content ?? raw.text ?? '',
-    createdAt: raw.created_at ?? raw.createdAt ?? null,
+    id: raw.id,
+    authorId: links.user?.href ? Number(links.user.href.split('/').pop()) : null,
+    authorName: links.user?.title ?? null,
+    body: raw.comment?.raw ?? raw.comment?.html ?? '',
+    createdAt: raw.createdAt ?? null,
   };
 }
 
-// ── Public API ────────────────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export const pm = {
   async verifyToken() {
-    // Try multiple common endpoints until one succeeds.
-    // A 401 on any means the token is definitively wrong.
-    // 403/404 on one endpoint just means the path is wrong — keep trying.
-    const USER_ENDPOINTS = [
-      '/api/me',
-      '/api/users/me',
-      '/api/v1/me',
-      '/api/v1/users/me',
-      '/api/auth/me',
-      '/api/profile',
-      '/api/account',
-      '/api/user',
-    ];
-
-    let lastErr = null;
-
-    for (const endpoint of USER_ENDPOINTS) {
-      try {
-        const data = await request('GET', endpoint);
-        return { ok: true, user: normalizeUser(data) };
-      } catch (err) {
-        lastErr = err;
-        if (err.status === 401) return { ok: false, user: null };
-        // 403 / 404 / 500 — wrong path, try next
-      }
-    }
-
-    // None of the user-info endpoints worked.
-    // Fall back: try listing projects — if that succeeds the token IS valid.
     try {
-      await request('GET', '/api/projects');
-      return { ok: true, user: { id: null, name: 'User', email: '', avatarUrl: null } };
+      const data = await request('GET', '/api/v3/users/me');
+      return { ok: true, user: normalizeUser(data) };
     } catch (err) {
       if (err.status === 401) return { ok: false, user: null };
-      // Throw the most informative error we collected
-      throw lastErr || err;
+      throw err;
     }
   },
 
   async listProjects() {
-    // TODO(Phase 0): confirm path and pagination
-    const raw = await fetchAllPages('/api/projects');
+    const raw = await fetchAllPages('/api/v3/projects');
     return raw.map(normalizeProject);
   },
 
   async getProject(id) {
-    const raw = await request('GET', `/api/projects/${id}`);
+    const raw = await request('GET', `/api/v3/projects/${id}`);
     return normalizeProject(raw);
   },
 
   async listUsers() {
-    // TODO(Phase 0): confirm path
-    const raw = await fetchAllPages('/api/users');
-    return raw.map(normalizeUser);
+    try {
+      const raw = await fetchAllPages('/api/v3/users');
+      return raw.map(normalizeUser);
+    } catch {
+      // /api/v3/users requires admin; fall back to empty list
+      return [];
+    }
+  },
+
+  async listProjectMembers(projectId) {
+    try {
+      const raw = await fetchAllPages(`/api/v3/projects/${projectId}/members`);
+      return raw.map(m => normalizeUser(m._links?.principal ?? m));
+    } catch {
+      return [];
+    }
   },
 
   async listTasks(projectId, filters = {}) {
-    const queryParams = { project_id: projectId, ...filters };
-    // TODO(Phase 0): confirm path — may be /api/projects/{id}/tasks or /api/tasks?project_id=
-    const raw = await fetchAllPages(`/api/projects/${projectId}/tasks`, queryParams);
+    const queryParams = {};
+    if (filters.status) queryParams['filters'] = JSON.stringify([{ status: { operator: '=', values: [filters.status] } }]);
+    const raw = await fetchAllPages(`/api/v3/projects/${projectId}/work_packages`, queryParams);
     return raw.map(normalizeTask);
   },
 
   async getTask(id) {
-    const raw = await request('GET', `/api/tasks/${id}`);
+    const raw = await request('GET', `/api/v3/work_packages/${id}`);
     return normalizeTask(raw);
   },
 
   async createTask(input) {
-    // TODO(Phase 0): confirm required fields and body shape
-    const raw = await request('POST', '/api/tasks', {
-      title: input.title,
-      description: input.description,
-      project_id: input.projectId,
-      assignee_id: input.assigneeId,
-      priority: input.priority ?? 'medium',
-      status: input.status ?? 'todo',
-    });
+    const body = {
+      subject: input.title,
+      description: { raw: input.description ?? '' },
+      _links: {},
+    };
+    if (input.assigneeId) {
+      body._links.assignee = { href: `/api/v3/users/${input.assigneeId}` };
+    }
+    const raw = await request('POST', `/api/v3/projects/${input.projectId}/work_packages`, body);
     return normalizeTask(raw);
   },
 
   async updateTask(id, patch) {
-    // TODO(Phase 0): confirm PATCH vs PUT, field names
-    const raw = await request('PATCH', `/api/tasks/${id}`, patch);
+    // Must include lockVersion to avoid conflicts
+    const current = await request('GET', `/api/v3/work_packages/${id}`);
+    const body = {
+      lockVersion: current.lockVersion,
+      _links: {},
+    };
+    if (patch.title) body.subject = patch.title;
+    if (patch.description !== undefined) body.description = { raw: patch.description };
+    if (patch.assigneeId) body._links.assignee = { href: `/api/v3/users/${patch.assigneeId}` };
+    const raw = await request('PATCH', `/api/v3/work_packages/${id}`, body);
     return normalizeTask(raw);
   },
 
-  async moveTask(id, newStatus) {
-    // TODO(Phase 0): may be same as updateTask or a dedicated endpoint
-    const raw = await request('PATCH', `/api/tasks/${id}`, { status: newStatus });
+  async moveTask(id, newStatusHref) {
+    const current = await request('GET', `/api/v3/work_packages/${id}`);
+    const body = {
+      lockVersion: current.lockVersion,
+      _links: { status: { href: newStatusHref } },
+    };
+    const raw = await request('PATCH', `/api/v3/work_packages/${id}`, body);
     return normalizeTask(raw);
+  },
+
+  async listStatuses() {
+    try {
+      const data = await request('GET', '/api/v3/statuses');
+      return (data?._embedded?.elements ?? []).map(s => ({
+        id: s.id,
+        name: s.name,
+        href: s._links?.self?.href ?? `/api/v3/statuses/${s.id}`,
+        isClosed: s.isClosed ?? false,
+      }));
+    } catch {
+      return [];
+    }
   },
 
   async listComments(taskId) {
-    // TODO(Phase 0): confirm path
-    const raw = await fetchAllPages(`/api/tasks/${taskId}/comments`);
-    return raw.map(normalizeComment);
+    try {
+      const data = await request('GET', `/api/v3/work_packages/${taskId}/activities`);
+      const elements = data?._embedded?.elements ?? [];
+      return elements
+        .filter(a => a.comment?.raw)
+        .map(normalizeComment);
+    } catch {
+      return [];
+    }
   },
 
   async addComment(taskId, body) {
-    // TODO(Phase 0): confirm field name (body vs content vs text)
-    const raw = await request('POST', `/api/tasks/${taskId}/comments`, { body });
+    const raw = await request('POST', `/api/v3/work_packages/${taskId}/activities`, {
+      comment: { raw: body },
+    });
     return normalizeComment(raw);
   },
 };

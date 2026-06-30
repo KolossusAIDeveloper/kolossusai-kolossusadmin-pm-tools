@@ -31,7 +31,7 @@ export default function TokenGate() {
       if (err.status === 401) {
         setError('Invalid token — please check and try again.');
       } else if (err.status === 403) {
-        setError('Access denied (403). Your token may be valid but lacks the required API permissions. Try running a Diagnostics check below, or contact your Ocius administrator.');
+        setError('Access denied (403). Your API key may lack required permissions, or the token format is wrong. OpenProject requires an API key (not a login password). Generate one under My Account → Access Tokens in Ocius.');
       } else if (err.status === 404) {
         setError('API endpoint not found (404). The Ocius API path may differ — try Diagnostics below.');
       } else {
