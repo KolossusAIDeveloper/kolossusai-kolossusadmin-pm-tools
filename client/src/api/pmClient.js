@@ -6,6 +6,14 @@ const PROXY_BASE = '/proxy';
 
 let _token = null;
 
+// Call the server-side probe to find which endpoint + auth format works.
+// Returns { found, endpoint, authFormat } or { found: false }.
+export async function probeApi(token) {
+  const res = await fetch(`/api/probe?token=${encodeURIComponent(token)}`);
+  if (!res.ok) return { found: false };
+  return res.json();
+}
+
 export function setToken(token) {
   _token = token;
 }
@@ -138,13 +146,42 @@ function normalizeComment(raw) {
 
 export const pm = {
   async verifyToken() {
-    // TODO(Phase 0): confirm endpoint — common options: /api/me, /api/users/me, /api/auth/me
+    // Try multiple common endpoints until one succeeds.
+    // A 401 on any means the token is definitively wrong.
+    // 403/404 on one endpoint just means the path is wrong — keep trying.
+    const USER_ENDPOINTS = [
+      '/api/me',
+      '/api/users/me',
+      '/api/v1/me',
+      '/api/v1/users/me',
+      '/api/auth/me',
+      '/api/profile',
+      '/api/account',
+      '/api/user',
+    ];
+
+    let lastErr = null;
+
+    for (const endpoint of USER_ENDPOINTS) {
+      try {
+        const data = await request('GET', endpoint);
+        return { ok: true, user: normalizeUser(data) };
+      } catch (err) {
+        lastErr = err;
+        if (err.status === 401) return { ok: false, user: null };
+        // 403 / 404 / 500 — wrong path, try next
+      }
+    }
+
+    // None of the user-info endpoints worked.
+    // Fall back: try listing projects — if that succeeds the token IS valid.
     try {
-      const data = await request('GET', '/api/me');
-      return { ok: true, user: normalizeUser(data) };
+      await request('GET', '/api/projects');
+      return { ok: true, user: { id: null, name: 'User', email: '', avatarUrl: null } };
     } catch (err) {
       if (err.status === 401) return { ok: false, user: null };
-      throw err;
+      // Throw the most informative error we collected
+      throw lastErr || err;
     }
   },
 

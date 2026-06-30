@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { pm, setToken } from '../api/pmClient';
+import { pm, setToken, probeApi } from '../api/pmClient';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function TokenGate() {
@@ -7,6 +7,8 @@ export default function TokenGate() {
   const [token, setInputToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -14,6 +16,7 @@ export default function TokenGate() {
 
     setLoading(true);
     setError('');
+    setProbeResult(null);
 
     try {
       setToken(token.trim());
@@ -27,12 +30,30 @@ export default function TokenGate() {
     } catch (err) {
       if (err.status === 401) {
         setError('Invalid token — please check and try again.');
+      } else if (err.status === 403) {
+        setError('Access denied (403). Your token may be valid but lacks the required API permissions. Try running a Diagnostics check below, or contact your Ocius administrator.');
+      } else if (err.status === 404) {
+        setError('API endpoint not found (404). The Ocius API path may differ — try Diagnostics below.');
       } else {
-        setError(`Connection error: ${err.message}. Check network / API reachability.`);
+        setError(`Connection error: ${err.message}. Check your network and that the Ocius API is reachable.`);
       }
       setToken(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleProbe() {
+    if (!token.trim()) return;
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const result = await probeApi(token.trim());
+      setProbeResult(result);
+    } catch {
+      setProbeResult({ found: false, error: 'Could not reach the diagnostic endpoint.' });
+    } finally {
+      setProbing(false);
     }
   }
 
@@ -89,6 +110,49 @@ export default function TokenGate() {
             {loading ? <><span className="spinner" style={{ width: 16, height: 16 }} /> Verifying…</> : 'Connect'}
           </button>
         </form>
+
+        {/* Diagnostics section — shown when there's an error and a token is entered */}
+        {error && token.trim() && (
+          <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleProbe}
+              disabled={probing}
+              style={{ fontSize: 12, padding: '6px 12px', color: 'var(--text-muted)' }}
+            >
+              {probing ? <><span className="spinner" style={{ width: 12, height: 12 }} /> Scanning API…</> : '🔍 Run Diagnostics'}
+            </button>
+
+            {probeResult && (
+              <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.6 }}>
+                {probeResult.found ? (
+                  <div style={{ color: 'var(--success, #4ade80)' }}>
+                    ✓ Working endpoint found: <code>{probeResult.endpoint}</code> with <code>{probeResult.authFormat}</code> auth.
+                    <br />Share this with your administrator to update the app configuration.
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    No working endpoint found across {probeResult.results?.length ?? 0} combinations tested.
+                    <br />The token may be invalid, expired, or the API URL may have changed.
+                    {probeResult.results && (
+                      <details style={{ marginTop: 6 }}>
+                        <summary style={{ cursor: 'pointer' }}>View details</summary>
+                        <div style={{ marginTop: 6, fontFamily: 'monospace', fontSize: 11 }}>
+                          {probeResult.results.map((r, i) => (
+                            <div key={i} style={{ color: r.ok ? 'var(--success, #4ade80)' : 'var(--text-muted)' }}>
+                              {r.ok ? '✓' : '✗'} {r.endpoint} [{r.authFormat}] → {r.status || 'err'}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         <p style={{ marginTop: 20, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
           Your token is never stored on our servers. It clears when you close the tab.
