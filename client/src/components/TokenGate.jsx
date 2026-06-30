@@ -132,21 +132,37 @@ export default function TokenGate() {
                     <br />Share this with your administrator to update the app configuration.
                   </div>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)' }}>
-                    No working endpoint found across {probeResult.results?.length ?? 0} combinations tested.
-                    <br />The token may be invalid, expired, or the API URL may have changed.
-                    {probeResult.results && (
-                      <details style={{ marginTop: 6 }}>
-                        <summary style={{ cursor: 'pointer' }}>View details</summary>
-                        <div style={{ marginTop: 6, fontFamily: 'monospace', fontSize: 11 }}>
-                          {probeResult.results.map((r, i) => (
-                            <div key={i} style={{ color: r.ok ? 'var(--success, #4ade80)' : 'var(--text-muted)' }}>
-                              {r.ok ? '✓' : '✗'} {r.endpoint} [{r.authFormat}] → {r.status || 'err'}
-                            </div>
-                          ))}
+                  <div>
+                    {probeResult.pathHits && probeResult.pathHits.length > 0 ? (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ color: '#facc15', fontWeight: 600, marginBottom: 4 }}>
+                          ⚡ Found {probeResult.pathHits.length} real API path(s) — token auth was rejected:
                         </div>
-                      </details>
+                        {probeResult.pathHits.map((r, i) => (
+                          <div key={i} style={{ fontFamily: 'monospace', fontSize: 11, color: '#facc15' }}>
+                            → {r.endpoint} [{r.authFormat}] → HTTP {r.status}
+                            {r.bodySnippet && <div style={{ color: 'var(--text-muted)', marginLeft: 10 }}>{r.bodySnippet}</div>}
+                          </div>
+                        ))}
+                        <div style={{ color: 'var(--text-muted)', marginTop: 6 }}>
+                          The API paths above exist. The token may need a different format — contact your Ocius administrator with the paths above.
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ color: 'var(--text-muted)' }}>
+                        No API paths found — every path returned 404. The API may be at a different base URL.
+                      </div>
                     )}
+                    <details style={{ marginTop: 6 }}>
+                      <summary style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>View all {probeResult.results?.length ?? 0} results</summary>
+                      <div style={{ marginTop: 6, fontFamily: 'monospace', fontSize: 11, maxHeight: 200, overflowY: 'auto' }}>
+                        {probeResult.results?.map((r, i) => (
+                          <div key={i} style={{ color: r.ok ? '#4ade80' : r.status && r.status !== 404 ? '#facc15' : 'var(--text-muted)' }}>
+                            {r.ok ? '✓' : r.status && r.status !== 404 ? '!' : '✗'} {r.endpoint} [{r.authFormat}] → {r.status || 'err'}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   </div>
                 )}
               </div>
