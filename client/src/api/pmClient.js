@@ -68,8 +68,36 @@ export const pm = {
   async verifyToken() { try { const data = await request('GET', '/api/v3/users/me'); return { ok: true, user: normalizeUser(data) }; } catch (err) { if (err.status === 401) return { ok: false, user: null }; throw err; } },
   async listProjects() { return (await fetchAllPages('/api/v3/projects')).map(normalizeProject); },
   async getProject(id) { return normalizeProject(await request('GET', `/api/v3/projects/${id}`)); },
-  async listUsers() { try { return (await fetchAllPages('/api/v3/users')).map(normalizeUser); } catch { return []; } },
-  async listProjectMembers(projectId) { try { return (await fetchAllPages(`/api/v3/projects/${projectId}/members`)).map(m => normalizeUser(m._links?.principal ?? m)); } catch { return []; } },
+  async listUsers() { try { return (await fetchAllPages('/api/v3/users', { sortBy: JSON.stringify([['name', 'asc']]) })).map(normalizeUser); } catch { return []; } },
+  async listProjectMembers(projectId) {
+    const seen = new Map();
+    // Always include current logged-in user
+    try { const me = await request('GET', '/api/v3/users/me'); const u = normalizeUser(me); if (u.id) seen.set(u.id, u); } catch {}
+    // Try /api/v3/memberships with project filter (OpenProject standard)
+    try {
+      const filters = JSON.stringify([{ project: { operator: '=', values: [String(projectId)] } }]);
+      const items = await fetchAllPages('/api/v3/memberships', { filters });
+      for (const m of items) {
+        const p = m._links?.principal;
+        if (!p?.href) continue;
+        const id = Number(p.href.split('/').pop());
+        if (id && !isNaN(id) && !seen.has(id)) seen.set(id, { id, name: p.title || 'Unknown', email: '', avatarUrl: null });
+      }
+    } catch {}
+    // Fallback: direct project members endpoint
+    if (seen.size <= 1) {
+      try {
+        const items = await fetchAllPages(`/api/v3/projects/${projectId}/members`);
+        for (const m of items) {
+          const p = m._links?.principal;
+          const id = p?.href ? Number(p.href.split('/').pop()) : m.id;
+          const name = p?.title || m.name || '';
+          if (id && !isNaN(id) && !seen.has(id)) seen.set(id, { id, name: name || 'Unknown', email: m.email || '', avatarUrl: null });
+        }
+      } catch {}
+    }
+    return [...seen.values()];
+  },
   async listStatuses() { try { const data = await request('GET', '/api/v3/statuses'); return (data?._embedded?.elements ?? []).map(s => ({ id: s.id, name: s.name, href: s._links?.self?.href ?? `/api/v3/statuses/${s.id}`, isClosed: s.isClosed ?? false })); } catch { return []; } },
   async listTasks(projectId, filters = {}) { const queryParams = {}; if (filters.status) queryParams.filters = JSON.stringify([{ status: { operator: '=', values: [filters.status] } }]); return (await fetchAllPages(`/api/v3/projects/${projectId}/work_packages`, queryParams)).map(normalizeTask); },
   async getTask(id) { return normalizeTask(await request('GET', `/api/v3/work_packages/${id}`)); },

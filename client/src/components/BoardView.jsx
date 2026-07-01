@@ -315,11 +315,24 @@ export default function BoardView({ project, onBack, onDashboard }) {
     staleTime: 30 * 1000,
   });
 
-  const { data: users = [] } = useQuery({
+  const { data: rawUsers = [] } = useQuery({
     queryKey: ['users'],
     queryFn: () => pm.listUsers(),
     staleTime: 5 * 60 * 1000,
   });
+
+  const { data: projectMembers = [] } = useQuery({
+    queryKey: ['members', project.id],
+    queryFn: () => pm.listProjectMembers(project.id),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Merge global users + project members, deduplicated by id
+  const users = useMemo(() => {
+    const seen = new Map();
+    [...rawUsers, ...projectMembers].forEach(u => { if (u?.id && !seen.has(u.id)) seen.set(u.id, u); });
+    return [...seen.values()];
+  }, [rawUsers, projectMembers]);
 
   const { data: statuses = [] } = useQuery({
     queryKey: ['statuses'],
