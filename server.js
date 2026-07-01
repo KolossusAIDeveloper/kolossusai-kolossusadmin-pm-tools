@@ -95,8 +95,58 @@ app.get('/api/probe', async (req, res) => {
   res.json({ found: false, pathHits, results });
 });
 
-// Proxy all /proxy/* requests to the PM API
-// The client sends Basic auth header which is forwarded as-is
+// Direct HTTPS forwarder for mutating requests (POST/PATCH/PUT).
+// express.json() drains the body stream before the proxy runs, so the
+// http-proxy-middleware body-rewrite approach can hang indefinitely.
+// This handler makes a fresh HTTPS request with the already-parsed body.
+function forwardMutating(req, res) {
+  const auth = req.headers['authorization'] || '';
+  const bodyData = req.body && Object.keys(req.body).length > 0
+    ? JSON.stringify(req.body)
+    : '';
+
+  const pmUrl = new URL(PM_API_BASE + req.url);
+  const options = {
+    hostname: pmUrl.hostname,
+    path: pmUrl.pathname + pmUrl.search,
+    method: req.method,
+    headers: {
+      Authorization: auth,
+      'Content-Type': 'application/json',
+      Accept: 'application/hal+json, application/json',
+    },
+    timeout: 30000,
+  };
+  if (bodyData) options.headers['Content-Length'] = Buffer.byteLength(bodyData);
+
+  const proxyReq = https.request(options, (proxyRes) => {
+    res.status(proxyRes.statusCode);
+    const ct = proxyRes.headers['content-type'];
+    if (ct) res.setHeader('Content-Type', ct);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    if (!res.headersSent) res.status(504).json({ error: 'Gateway timeout' });
+  });
+  proxyReq.on('error', (err) => {
+    if (!res.headersSent) res.status(502).json({ error: 'Proxy error', message: err.message });
+  });
+
+  if (bodyData) proxyReq.write(bodyData);
+  proxyReq.end();
+}
+
+// Intercept POST/PATCH/PUT before the GET proxy so body is forwarded correctly.
+app.use('/proxy', (req, res, next) => {
+  if (['POST', 'PATCH', 'PUT'].includes(req.method)) {
+    return forwardMutating(req, res);
+  }
+  next();
+});
+
+// Proxy all GET/DELETE /proxy/* requests to the PM API
 app.use('/proxy', createProxyMiddleware({
   target: PM_API_BASE,
   changeOrigin: true,
@@ -105,15 +155,6 @@ app.use('/proxy', createProxyMiddleware({
     proxyReq: (proxyReq, req) => {
       const auth = req.headers['authorization'];
       if (auth) proxyReq.setHeader('Authorization', auth);
-
-      // express.json() consumes the body stream before the proxy runs.
-      // Re-serialize req.body so POST/PATCH/PUT payloads reach OpenProject.
-      if (req.body && Object.keys(req.body).length > 0 && ['POST', 'PATCH', 'PUT'].includes(req.method)) {
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-        proxyReq.write(bodyData);
-      }
     },
     error: (err, req, res) => {
       res.status(502).json({ error: 'Proxy error', message: err.message });
